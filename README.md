@@ -18,19 +18,25 @@ screen readers (JAWS, NVDA and others) and full keyboard control.
 Navigation keys stay silent so the TV's own Voice Guide isn't talked over; volume, channel,
 power and errors are spoken through the running screen reader.
 
-## Requirements
+## Download (no Python needed)
 
-- Windows 10 or 11 with Python 3.10 or later
-- `pip install wxPython accessible_output2`
-- The TV and the computer on the same network
+1. Go to the [Releases page](https://github.com/mcourcel/tv-remote/releases/latest) and download
+   `TV-Remote-windows.zip`.
+2. Unzip the whole folder somewhere, such as Documents, and run `TV Remote.exe`. Keep the files
+   together; the program needs them. Settings are kept in `settings.json` in the same folder.
+3. Windows SmartScreen may warn that the program is from an unknown publisher. Choose
+   "More info", then "Run anyway".
 
-## Running
+Needs Windows 10 or 11, 64-bit, with the TV and the computer on the same network.
 
-Run `Start TV Remote.bat`, or `pythonw tv_app.pyw`.
+## First run
 
-The first time, open Settings (Ctrl+Shift+S) and use **Find TV on the network**, or type the
-TV's address. When the app first connects, the TV asks on screen to allow
-"Accessible TV Remote": accept it with the TV's remote once.
+The app looks for a Samsung TV on your network by itself; if it finds more than one, it asks
+which. If it finds none, it opens Settings (Ctrl+Shift+S), where you can type the TV's
+address or try **Find TV on the network** again.
+
+The first time the app connects, the TV asks on screen to allow "Accessible TV Remote".
+Accept it with the TV's remote once; after that the app is remembered.
 
 If the TV refuses without asking, check on the TV: Settings, General, External Device Manager,
 Device Connection Manager. Set Access Notification to "First Time Only", and remove or allow
@@ -39,6 +45,15 @@ the app in the Device List.
 To turn the TV on from the app, enable **Power On with Mobile**: Settings, General, Network,
 Expert Settings.
 
+## Running from source
+
+- Windows 10 or 11 with Python 3.10 or later
+- `pip install wxPython accessible_output2`
+- Run `Start TV Remote.bat`, or `pythonw tv_app.pyw`
+
+To build the ready-to-run folder: `pip install pyinstaller pywin32`, then
+`pyinstaller --noconfirm tv_app.spec`. The result is `dist\TV Remote`.
+
 ## Files
 
 - `tv_app.pyw`: the window
@@ -46,3 +61,7 @@ Expert Settings.
   library only
 - `tv_logic.py`: key tables, keyboard map and message formats, no GUI code
 - `settings.json`: created by the app; holds the TV address and pairing token. Not committed.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

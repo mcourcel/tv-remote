@@ -25,7 +25,6 @@ except Exception:
 APP_NAME = "TV Remote"
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "settings.json")
-DEFAULT_HOST = "192.168.8.136"
 
 HELP_TEXT = """Keys for TV Remote
 
@@ -507,7 +506,7 @@ class MainFrame(wx.Frame):
     def __init__(self, settings):
         super().__init__(None, title=APP_NAME, size=(640, 620))
         self.settings = settings
-        self.tv = tv_api.SamsungTV(settings.get("host", DEFAULT_HOST), settings.get("mac", ""),
+        self.tv = tv_api.SamsungTV(settings.get("host", ""), settings.get("mac", ""),
                                    settings.get("token", ""), on_token=self.got_token)
         self.speech = Speech()
         self.jobs = queue.Queue()
@@ -549,7 +548,10 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_CLOSE, self.on_close)
 
         self.pages[3].loaded = True
-        self.pages[3].refresh(quiet=True)
+        if self.tv.host:
+            self.pages[3].refresh(quiet=True)
+        else:
+            wx.CallAfter(self.first_run)
         wx.CallAfter(self.pages[0].keypad.SetFocus)
 
     # ---- background work, one job at a time so key presses stay in order
@@ -647,6 +649,38 @@ class MainFrame(wx.Frame):
         elif not quiet:
             self.announce("TV is %s" % state)
 
+    def first_run(self):
+        """No TV chosen yet: look for one on the network."""
+        def done(found):
+            if len(found) == 1:
+                choice = found[0]
+            elif found:
+                labels = ["%s (%s) at %s" % ((info.get("device") or {}).get("name", "Samsung TV"),
+                                             (info.get("device") or {}).get("modelName", ""), ip)
+                          for ip, info in found]
+                with wx.SingleChoiceDialog(self, "Choose your TV:", "Samsung TVs found", labels) as dlg:
+                    if dlg.ShowModal() != wx.ID_OK:
+                        return
+                    choice = found[dlg.GetSelection()]
+            else:
+                wx.MessageBox("No Samsung TV answered on the network. Make sure the TV is on and on the "
+                              "same network as this computer, then type its address or use Find TV.",
+                              APP_NAME, wx.ICON_INFORMATION, self)
+                self.edit_settings()
+                return
+            ip, info = choice
+            self.tv.host = self.settings["host"] = ip
+            mac = logic.info_mac(info)
+            if mac:
+                self.tv.mac = self.settings["mac"] = mac
+            save_settings(self.settings)
+            name = (info.get("device") or {}).get("name") or "Samsung TV"
+            self.announce("Found %s at %s. The TV will ask to allow this app the first time you "
+                          "press a key: accept it with the TV remote." % (name, ip))
+            self.pages[3].refresh(quiet=True)
+        self.announce("Looking for your Samsung TV on the network")
+        self.jobs.put((lambda: tv_api.find_tvs(local_subnet()), done))
+
     def edit_settings(self):
         with SettingsDialog(self, self.tv.host, self.tv.mac) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
@@ -698,7 +732,6 @@ class MainFrame(wx.Frame):
 def main():
     app = wx.App()
     settings = load_settings()
-    settings.setdefault("host", DEFAULT_HOST)
     frame = MainFrame(settings)
     frame.Show()
     app.MainLoop()
