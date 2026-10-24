@@ -6,7 +6,6 @@ using accessible_output2. Ctrl+1 to Ctrl+4 switch pages, F1 lists the keys.
 import json
 import os
 import queue
-import socket
 import sys
 import threading
 import time
@@ -102,16 +101,6 @@ def labelled(parent, sizer, label, ctrl, proportion=0):
     return ctrl
 
 
-def local_subnet():
-    """First three parts of this computer's LAN address, e.g. '192.168.8'."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("192.0.2.1", 9))
-            return s.getsockname()[0].rsplit(".", 1)[0]
-    except OSError:
-        return "192.168.1"
-
-
 ACCEL_KEYS = {
     "Up": [wx.WXK_UP], "Down": [wx.WXK_DOWN], "Left": [wx.WXK_LEFT], "Right": [wx.WXK_RIGHT],
     "Enter": [wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER], "Back": [wx.WXK_BACK], "Home": [wx.WXK_HOME],
@@ -132,6 +121,10 @@ def alt_accels(spec):
         spec = spec[len("Shift+"):]
     codes = ACCEL_KEYS[spec] if spec in ACCEL_KEYS else [ord(spec)]
     return [(flags, code) for code in codes]
+
+
+NOT_FOUND_TIP = ("You can type the TV's address instead. To find it on the TV: Settings, General, "
+                 "Network, Network Status, IP Settings. A guest Wi-Fi network usually can't reach the TV.")
 
 
 # ---------------------------------------------------------------- dialogs
@@ -177,12 +170,12 @@ class SettingsDialog(wx.Dialog):
     def on_find(self, evt):
         wx.BeginBusyCursor()
         try:
-            found = tv_api.find_tvs(local_subnet())
+            found, searched = tv_api.find_tvs()
         finally:
             wx.EndBusyCursor()
         if not found:
-            wx.MessageBox("No Samsung TV answered. Make sure it is on and on the same network.",
-                          "Find TV", wx.ICON_INFORMATION, self)
+            wx.MessageBox("No Samsung TV answered. Make sure it is on and on the same network. %s\n\n%s"
+                          %(logic.searched_text(searched), NOT_FOUND_TIP), "Find TV", wx.ICON_INFORMATION, self)
             return
         labels = ["%s (%s) at %s" % ((info.get("device") or {}).get("name", "Samsung TV"),
                                      (info.get("device") or {}).get("modelName", ""), ip) for ip, info in found]
@@ -651,7 +644,8 @@ class MainFrame(wx.Frame):
 
     def first_run(self):
         """No TV chosen yet: look for one on the network."""
-        def done(found):
+        def done(result):
+            found, searched = result
             if len(found) == 1:
                 choice = found[0]
             elif found:
@@ -664,7 +658,8 @@ class MainFrame(wx.Frame):
                     choice = found[dlg.GetSelection()]
             else:
                 wx.MessageBox("No Samsung TV answered on the network. Make sure the TV is on and on the "
-                              "same network as this computer, then type its address or use Find TV.",
+                              "same network as this computer. %s\n\n%s"
+                              % (logic.searched_text(searched), NOT_FOUND_TIP),
                               APP_NAME, wx.ICON_INFORMATION, self)
                 self.edit_settings()
                 return
@@ -679,7 +674,7 @@ class MainFrame(wx.Frame):
                           "press a key: accept it with the TV remote." % (name, ip))
             self.pages[3].refresh(quiet=True)
         self.announce("Looking for your Samsung TV on the network")
-        self.jobs.put((lambda: tv_api.find_tvs(local_subnet()), done))
+        self.jobs.put((tv_api.find_tvs, done))
 
     def edit_settings(self):
         with SettingsDialog(self, self.tv.host, self.tv.mac) as dlg:

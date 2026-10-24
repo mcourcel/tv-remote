@@ -310,23 +310,66 @@ class SamsungTV:
                 time.sleep(0.1)
 
 
-def find_tvs(subnet_prefix, timeout=0.6):
-    """Scan prefix.1-254 for Samsung TVs. Returns [(ip, info dict)]."""
+def local_addresses():
+    """This computer's IPv4 LAN addresses, the one with the default route first.
+
+    A VPN or virtual adapter (Hyper-V, VirtualBox) can own the default route, so every
+    private address is returned, not just that one.
+    """
+    found = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        found += [a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    result = []
+    for ip in found:
+        if logic.is_lan_address(ip) and ip not in result:
+            result.append(ip)
+    return result
+
+
+def find_tvs(timeout=1.5, retry_timeout=4):
+    """Look for Samsung TVs on every network this computer is on.
+
+    Returns (found, searched): found is [(ip, info dict)], searched the networks scanned,
+    like ['192.168.8'], for explaining a failure.
+    """
     import concurrent.futures
 
-    def probe(i):
-        ip = "%s.%d" % (subnet_prefix, i)
+    addresses = local_addresses()
+    prefixes = []
+    for ip in addresses:
+        prefix = ip.rsplit(".", 1)[0]
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+
+    def is_tv(ip):
+        info = SamsungTV(ip).info(timeout=4)
+        return (ip, info) if info and "device" in info else None
+
+    def probe(ip, timeout=timeout):
         s = socket.socket()
         s.settimeout(timeout)
         try:
             if s.connect_ex((ip, 8001)) != 0:
                 return None
+        except OSError:
+            return None
         finally:
             s.close()
-        info = SamsungTV(ip).info()
-        if info and "device" in info:
-            return ip, info
-        return None
+        return is_tv(ip)
 
-    with concurrent.futures.ThreadPoolExecutor(64) as ex:
-        return [r for r in ex.map(probe, range(1, 255)) if r]
+    candidates = ["%s.%d" % (p, i) for p in prefixes for i in range(1, 255)]
+    candidates = [ip for ip in candidates if ip not in addresses]
+    with concurrent.futures.ThreadPoolExecutor(128) as ex:
+        found = [r for r in ex.map(probe, candidates) if r]
+        if not found:
+            # A TV on Wi-Fi can be slow to answer, especially in standby: try once more, slower.
+            found = [r for r in ex.map(lambda ip: probe(ip, retry_timeout), candidates) if r]
+    return found, prefixes

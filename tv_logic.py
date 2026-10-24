@@ -149,6 +149,21 @@ def magic_packet(mac):
     return b"\xff" * 6 + bytes.fromhex(normalize_mac(mac).replace(":", "")) * 16
 
 
+def is_lan_address(ip):
+    """Private home/office IPv4 address (not loopback, link-local or a VPN's 100.64/10 range)."""
+    try:
+        a, b = (int(x) for x in ip.split(".")[:2])
+    except ValueError:
+        return False
+    return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+
+
+def searched_text(prefixes):
+    if not prefixes:
+        return "This computer doesn't seem to be connected to a home network."
+    return "Searched %s." % ", ".join("%s.1 to %s.254" % (p, p) for p in prefixes)
+
+
 def broadcast_for(ip):
     parts = ip.split(".")
     if len(parts) == 4 and all(p.isdigit() for p in parts):
