@@ -62,7 +62,11 @@ after that the app is remembered.
 
 
 class Speech:
-    def __init__(self):
+    """Speaks through the running screen reader. The Windows (SAPI) voice, which
+    accessible_output2 falls back to when no screen reader runs, is used only if allowed."""
+
+    def __init__(self, allow_system_voice=False):
+        self.allow_system_voice = allow_system_voice
         self._out = None
         if _AutoSpeech:
             try:
@@ -71,11 +75,14 @@ class Speech:
                 self._out = None
 
     def say(self, text, interrupt=True):
-        if self._out:
-            try:
-                self._out.output(text, interrupt=interrupt)
-            except Exception:
-                pass
+        if not self._out:
+            return
+        try:
+            out = self._out.get_first_available_output()
+            if out and (self.allow_system_voice or not out.is_system_output()):
+                out.speak(text, interrupt=interrupt)
+        except Exception:
+            pass
 
 
 def load_settings():
@@ -146,7 +153,7 @@ class TextDialog(wx.Dialog):
 
 
 class SettingsDialog(wx.Dialog):
-    def __init__(self, parent, host, mac):
+    def __init__(self, parent, host, mac, system_voice):
         super().__init__(parent, title="TV settings")
         self.forget = False
         s = wx.BoxSizer(wx.VERTICAL)
@@ -158,6 +165,9 @@ class SettingsDialog(wx.Dialog):
         row.Add(find, 0, wx.ALL, 6)
         row.Add(forget, 0, wx.ALL, 6)
         s.Add(row)
+        self.system_voice = wx.CheckBox(self, label="Speak with the &Windows voice when no screen reader is running")
+        self.system_voice.SetValue(system_voice)
+        s.Add(self.system_voice, 0, wx.ALL, 6)
         s.Add(wx.StaticText(self, label="To turn the TV on from here, enable Power On with Mobile on the TV: "
                                         "Settings, General, Network, Expert Settings."), 0, wx.ALL, 6)
         s.Add(self.CreateButtonSizer(wx.OK | wx.CANCEL), 0, wx.ALL | wx.ALIGN_RIGHT, 6)
@@ -242,12 +252,21 @@ class Keypad(wx.Panel):
         self.SetName("Remote keypad")
         self.SetAccessible(KeypadAccessible(self))
         self.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW))
-        wx.StaticText(self, label="Remote keypad: click here or tab here, then use the keyboard.", pos=(8, 8))
+        self.text = wx.StaticText(self, label="Keyboard control: click or tab here, then use the keyboard.\n"
+                                              "F1 lists the keys.", pos=(10, 8))
+        self.text.Bind(wx.EVT_LEFT_DOWN, lambda e: self.SetFocus())
         self.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
         self.Bind(wx.EVT_CHAR, self.on_char)
         self.Bind(wx.EVT_LEFT_DOWN, lambda e: self.SetFocus())
-        self.Bind(wx.EVT_SET_FOCUS, lambda e: (self.Refresh(), e.Skip()))
-        self.Bind(wx.EVT_KILL_FOCUS, lambda e: (self.Refresh(), e.Skip()))
+        self.Bind(wx.EVT_SET_FOCUS, lambda e: (self.show_focus(True), e.Skip()))
+        self.Bind(wx.EVT_KILL_FOCUS, lambda e: (self.show_focus(False), e.Skip()))
+
+    def show_focus(self, focused):
+        """A visible cue for sighted users: the area turns light blue while it has the keyboard."""
+        colour = wx.Colour(210, 230, 255) if focused else wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
+        self.SetBackgroundColour(colour)
+        self.text.SetBackgroundColour(colour)
+        self.Refresh()
 
     def AcceptsFocus(self):
         return True
@@ -303,41 +322,148 @@ class Page(wx.Panel):
         return None
 
 
+class ButtonAccessible(wx.Accessible):
+    """Adds the keyboard shortcut as the button's description; everything else stays standard."""
+
+    def __init__(self, win, description):
+        super().__init__(win)
+        self.description = description
+
+    def GetDescription(self, childId):
+        return wx.ACC_OK, self.description
+
+
+def high_contrast():
+    """True when Windows High Contrast is on: then the app keeps the system colours."""
+    try:
+        import ctypes
+
+        class HIGHCONTRAST(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint), ("lpszDefaultScheme", ctypes.c_wchar_p)]
+        hc = HIGHCONTRAST(ctypes.sizeof(HIGHCONTRAST), 0, None)
+        ctypes.windll.user32.SystemParametersInfoW(0x0042, ctypes.sizeof(hc), ctypes.byref(hc), 0)
+        return bool(hc.dwFlags & 1)
+    except Exception:
+        return False
+
+
+class RemoteBody(wx.Panel):
+    """The dark, rounded remote the buttons sit on."""
+
+    BODY = wx.Colour(38, 38, 42)
+
+    def __init__(self, parent, styled):
+        super().__init__(parent)
+        self.styled = styled
+        if styled:
+            self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+            self.SetBackgroundColour(self.BODY)
+            self.Bind(wx.EVT_PAINT, self.on_paint)
+            self.Bind(wx.EVT_SIZE, lambda e: (self.Refresh(), e.Skip()))
+
+    def on_paint(self, evt):
+        dc = wx.AutoBufferedPaintDC(self)
+        dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+        dc.Clear()
+        w, h = self.GetClientSize()
+        dc.SetPen(wx.Pen(wx.Colour(90, 90, 96), 2))
+        dc.SetBrush(wx.Brush(self.BODY))
+        dc.DrawRoundedRectangle(1, 1, w - 2, h - 2, 28)
+
+
 class RemotePage(Page):
     title = "Remote"
-    # No mnemonics here: Alt+letter is taken by the remote shortcuts, so each label names its key.
-    BUTTONS = [("Power (Ctrl+Shift+P)", None), ("Home (Alt+H)", "KEY_HOME"),
-               ("Back (Alt+Backspace)", "KEY_RETURN"), ("OK (Alt+Enter)", "KEY_ENTER"),
-               ("Up (Alt+Up)", "KEY_UP"), ("Down (Alt+Down)", "KEY_DOWN"),
-               ("Left (Alt+Left)", "KEY_LEFT"), ("Right (Alt+Right)", "KEY_RIGHT"),
-               ("Volume up (Alt+=)", "KEY_VOLUP"), ("Volume down (Alt+-)", "KEY_VOLDOWN"),
-               ("Mute (Alt+M)", "KEY_MUTE"), ("Channel up (Alt+Page Up)", "KEY_CHUP"),
-               ("Channel down (Alt+Page Down)", "KEY_CHDOWN"), ("Source (Alt+O)", "KEY_SOURCE"),
-               ("Settings (Alt+E)", "KEY_MENU"), ("Exit (Alt+X)", "KEY_EXIT")]
+    # Colours: (normal background, text). Focus turns any button blue so it's easy to see.
+    GREY = (wx.Colour(70, 70, 76), wx.WHITE)
+    DARK = (wx.Colour(55, 55, 60), wx.WHITE)
+    POWER = (wx.Colour(190, 40, 40), wx.WHITE)
+    OK = (wx.Colour(105, 105, 112), wx.WHITE)
+    COLOURS = {"KEY_RED": (wx.Colour(200, 40, 40), wx.WHITE), "KEY_GREEN": (wx.Colour(40, 150, 60), wx.WHITE),
+               "KEY_YELLOW": (wx.Colour(225, 195, 40), wx.BLACK), "KEY_CYAN": (wx.Colour(40, 90, 200), wx.WHITE)}
+    FOCUS = (wx.Colour(30, 136, 229), wx.WHITE)
+
+    # Rows of the remote, top to bottom; this is also the Tab order. None leaves a gap.
+    # (label, TV key or "power", shortcut)
+    ROWS = [
+        [("Power", "power", "Ctrl+Shift+P"), None, ("Source", "KEY_SOURCE", "Alt+O")],
+        [("1", "KEY_1", "Alt+1"), ("2", "KEY_2", "Alt+2"), ("3", "KEY_3", "Alt+3")],
+        [("4", "KEY_4", "Alt+4"), ("5", "KEY_5", "Alt+5"), ("6", "KEY_6", "Alt+6")],
+        [("7", "KEY_7", "Alt+7"), ("8", "KEY_8", "Alt+8"), ("9", "KEY_9", "Alt+9")],
+        [("Info", "KEY_INFO", "Alt+I"), ("0", "KEY_0", "Alt+0"), ("Guide", "KEY_GUIDE", "Alt+G")],
+        "gap",
+        [("Volume up", "KEY_VOLUP", "Alt+="), ("Home", "KEY_HOME", "Alt+H"), ("Channel up", "KEY_CHUP", "Alt+Page Up")],
+        [("Mute", "KEY_MUTE", "Alt+M"), ("Settings", "KEY_MENU", "Alt+E"), ("Previous channel", "KEY_PRECH", "Alt+L")],
+        [("Volume down", "KEY_VOLDOWN", "Alt+-"), None, ("Channel down", "KEY_CHDOWN", "Alt+Page Down")],
+        "gap",
+        [None, ("Up", "KEY_UP", "Alt+Up"), None],
+        [("Left", "KEY_LEFT", "Alt+Left"), ("OK", "KEY_ENTER", "Alt+Enter"), ("Right", "KEY_RIGHT", "Alt+Right")],
+        [None, ("Down", "KEY_DOWN", "Alt+Down"), None],
+        [("Back", "KEY_RETURN", "Alt+Backspace"), ("Tools", "KEY_TOOLS", "Alt+T"), ("Exit", "KEY_EXIT", "Alt+X")],
+        "gap",
+        [("Rewind", "KEY_REWIND", "Alt+R"), ("Play", "KEY_PLAY", "Alt+P"), ("Pause", "KEY_PAUSE", "Alt+K"),
+         ("Stop", "KEY_STOP", "Alt+S"), ("Fast forward", "KEY_FF", "Alt+F")],
+        [("Red", "KEY_RED", "Alt+F9"), ("Green", "KEY_GREEN", "Alt+F10"), ("Yellow", "KEY_YELLOW", "Alt+F11"),
+         ("Blue", "KEY_CYAN", "Alt+F12"), ("Captions", "KEY_CAPTION", "Alt+C")],
+    ]
 
     def __init__(self, parent, frame):
         super().__init__(parent, frame)
-        s = wx.BoxSizer(wx.VERTICAL)
-        self.keypad = Keypad(self, frame.send_key)
-        s.Add(self.keypad, 0, wx.EXPAND | wx.ALL, 6)
-        grid = wx.GridSizer(4, 4, 4, 4)
-        for label, key in self.BUTTONS:
-            b = wx.Button(self, label=label)
-            if key:
-                b.Bind(wx.EVT_BUTTON, lambda e, k=key: self.frame.send_key(k))
-            else:
-                b.Bind(wx.EVT_BUTTON, lambda e: self.frame.power())
-            grid.Add(b, 0, wx.EXPAND)
-        s.Add(grid, 0, wx.EXPAND | wx.ALL, 6)
-        self.all_keys = labelled(self, s, "&All remote buttons (Enter sends):",
+        self.styled = not high_contrast()
+        outer = wx.BoxSizer(wx.HORIZONTAL)
+        body = RemoteBody(self, self.styled)
+        bs = wx.BoxSizer(wx.VERTICAL)
+        # Created first so it comes first in the Tab order: the remote's "touch area".
+        self.keypad = Keypad(body, frame.send_key)
+        bs.Add(self.keypad, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 18)
+        for row in self.ROWS:
+            if row == "gap":
+                bs.AddSpacer(8)
+                continue
+            grid = wx.GridSizer(1, len(row), 0, 6)
+            for cell in row:
+                if cell is None:
+                    grid.AddSpacer(1)
+                else:
+                    grid.Add(self.make_button(body, *cell), 0, wx.EXPAND)
+            bs.AddSpacer(6)
+            bs.Add(grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 18)
+        bs.AddSpacer(22)
+        body.SetSizer(bs)
+        outer.Add(body, 0, wx.ALL, 8)
+
+        side = wx.BoxSizer(wx.VERTICAL)
+        self.all_keys = labelled(self, side, "&All remote buttons (Enter sends):",
                                  wx.ListBox(self, choices=[name for _, name in logic.KEYS]), 1)
         self.all_keys.SetSelection(0)
         send = wx.Button(self, label="Sen&d selected button")
-        s.Add(send, 0, wx.ALL, 6)
-        self.SetSizer(s)
+        side.Add(send, 0, wx.ALL, 6)
+        outer.Add(side, 1, wx.EXPAND | wx.ALL, 4)
+        self.SetSizer(outer)
         send.Bind(wx.EVT_BUTTON, lambda e: self.send_selected())
         self.all_keys.Bind(wx.EVT_LISTBOX_DCLICK, lambda e: self.send_selected())
         self.all_keys.Bind(wx.EVT_KEY_DOWN, self.on_list_key)
+
+    def make_button(self, parent, label, key, shortcut):
+        b = wx.Button(parent, label=label, size=(-1, 28))
+        b.SetToolTip("%s (%s)" % (label, shortcut))
+        b.SetAccessible(ButtonAccessible(b, shortcut))
+        if key == "power":
+            b.Bind(wx.EVT_BUTTON, lambda e: self.frame.power())
+        else:
+            b.Bind(wx.EVT_BUTTON, lambda e, k=key: self.frame.send_key(k))
+        if self.styled:
+            colours = (self.POWER if key == "power" else self.OK if key == "KEY_ENTER"
+                       else self.COLOURS.get(key) or (self.GREY if label[0].isdigit() else self.DARK))
+            self.paint(b, colours)
+            b.Bind(wx.EVT_SET_FOCUS, lambda e, b=b: (self.paint(b, self.FOCUS), e.Skip()))
+            b.Bind(wx.EVT_KILL_FOCUS, lambda e, b=b, c=colours: (self.paint(b, c), e.Skip()))
+        return b
+
+    @staticmethod
+    def paint(button, colours):
+        button.SetBackgroundColour(colours[0])
+        button.SetForegroundColour(colours[1])
+        button.Refresh()
 
     def on_list_key(self, evt):
         if evt.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not evt.HasAnyModifiers():
@@ -497,11 +623,11 @@ class MainFrame(wx.Frame):
     PAGES = [RemotePage, AppsPage, TextPage, InfoPage]
 
     def __init__(self, settings):
-        super().__init__(None, title=APP_NAME, size=(640, 620))
+        super().__init__(None, title=APP_NAME, size=(820, 860))
         self.settings = settings
         self.tv = tv_api.SamsungTV(settings.get("host", ""), settings.get("mac", ""),
                                    settings.get("token", ""), on_token=self.got_token)
-        self.speech = Speech()
+        self.speech = Speech(settings.get("system_voice", False))
         self.jobs = queue.Queue()
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -574,7 +700,7 @@ class MainFrame(wx.Frame):
 
     def run(self, work, done, busy):
         self.SetStatusText(busy + "...")
-        if not self.tv.connected and not self.tv.token and work is not self.tv.info:
+        if not self.tv.connected and not self.tv.token and work != self.tv.info:
             self.announce("Connecting. If the TV asks to allow Accessible TV Remote, accept it with the TV remote.")
         self.jobs.put((work, done))
 
@@ -677,11 +803,12 @@ class MainFrame(wx.Frame):
         self.jobs.put((tv_api.find_tvs, done))
 
     def edit_settings(self):
-        with SettingsDialog(self, self.tv.host, self.tv.mac) as dlg:
+        with SettingsDialog(self, self.tv.host, self.tv.mac, self.speech.allow_system_voice) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return
             host, mac = dlg.host.GetValue().strip(), dlg.mac.GetValue().strip()
             forget = dlg.forget
+            self.speech.allow_system_voice = self.settings["system_voice"] = dlg.system_voice.GetValue()
         changed = host != self.tv.host
         self.tv.disconnect()
         self.tv.host, self.tv.mac = host, mac

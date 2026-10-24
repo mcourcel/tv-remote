@@ -15,8 +15,14 @@ screen readers (JAWS, NVDA and others) and full keyboard control.
   fully off rather than into Art Mode.
 - **TV info**: model, power state and network details.
 
+The Remote page is laid out like a real remote (number pad, volume and channel rockers, arrow
+pad, playback and colour buttons). Every button is a standard Windows button with a plain
+name, its Alt shortcut as tooltip and screen reader description, and a bright focus colour.
+With Windows High Contrast on, the system colours are used instead.
+
 Navigation keys stay silent so the TV's own Voice Guide isn't talked over; volume, channel,
-power and errors are spoken through the running screen reader.
+power and errors are spoken through the running screen reader. When no screen reader is
+running the app stays quiet, unless "Speak with the Windows voice" is turned on in Settings.
 
 ## Download (no Python needed)
 
