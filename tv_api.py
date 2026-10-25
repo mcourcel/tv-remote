@@ -284,6 +284,12 @@ class SamsungTV:
                 for (name, app_id), status in zip(logic.KNOWN_APPS, statuses) if status]
 
     def launch_app(self, app_id, app_type=2):
+        # Newer TVs (2021 Frame included) silently ignore ed.apps.launch but honour the REST call.
+        try:
+            if self._rest("POST", app_id):
+                return
+        except TVError:
+            pass
         self._send(logic.launch_payload(app_id, app_type))
 
     def open_browser(self, url):
